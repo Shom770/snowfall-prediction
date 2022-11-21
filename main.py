@@ -1,106 +1,147 @@
-from collections import defaultdict
+from itertools import chain
+from json import load
+from operator import itemgetter
+from statistics import median
 
-while (
-        station := input("Which station do you want to predict snow for the 2022-2023 year?: ").lower()
-) not in ("dca", "iad", "bwi"):
-    print("Invalid input. The station must either be DCA, BWI, or IAD (case insensitive)")
 
-oni = {}
+def retrieve_oni_values() -> dict:
+    """
+    Reads oni.json and serializes the JSON into a dictionary.
 
-with open("oceanic_nino_index/oni.txt") as file:
-    for line in file.readlines():
-        line = line.split()
-        oni[int(line[0])] = list(map(float, line[1:]))
+    :return: A dictionary with the key being the year and the value being a list of ONI values for time periods.
+    """
+    with open("oceanic_nino_index/oni.json") as file:
+        return {int(key): value for key, value in load(file).items()}
 
-snowfall = {}
-snowfall_total = {}
 
-with open(f"snowfall_data/snowfall_{station}.txt") as file:
-    for line in file.readlines():
-        line = line.split()
-        if line[0] != "1999-00":
-            snowfall[int(line[0][:2] + line[0].split("-")[-1])] = list(map(lambda x: float(x) if x != "T" else 0.01, line[6:12]))
+def retrieve_pdo_values() -> dict:
+    """
+    Reads pdo.json and serializes the JSON into a dictionary.
+
+    :return: A dictionary with the key being the year and the value being a list of PDO values for time periods.
+    """
+    with open("teleconnections/pdo.json") as file:
+        return {int(key): value for key, value in load(file).items()}
+
+
+def get_analog(
+        year: int,
+        look_back: int = 0,
+        start_year: int = 1964,
+        raise_to: int = 1,
+        years_to_return: int = 5
+) -> list:
+    """
+    Uses a year and finds the best analogs regarding ONI & PDO, to find the best analogs.
+
+    :param year: Year to find the best analogs for it.
+    :param look_back: When comparing ONI values, this parameter defines how many years the program should look back.
+    :param start_year: The year to start all comparisons from.
+    :param raise_to: How much to raise the differences by, default is 5.
+    :param years_to_return: How many years out of the top analogs to return (default is 5).
+    """
+    oni_analogs = {}
+    oni_values = retrieve_oni_values()
+    pdo_analogs = {}
+    pdo_values = retrieve_pdo_values()
+
+    if look_back == 0:
+        current_oni_progression = oni_values[year]
+    else:
+        start_year += look_back
+        current_oni_progression = list(
+            chain.from_iterable(
+                [oni_values[specific_year] for specific_year in range(year - look_back, year + 1)]
+            )
+        )
+    current_pdo_progression = pdo_values[year]
+
+    for analog_year in range(start_year, year):
+        if look_back == 0:
+            analog_oni_progression = oni_values[analog_year]
         else:
-            snowfall[2000] = list(map(lambda x: float(x) if x != "T" else 0.01, line[6:12]))
+            analog_oni_progression = list(
+                chain.from_iterable(
+                    [oni_values[specific_year] for specific_year in range(analog_year - look_back, analog_year + 1)]
+                )
+            )
+        analog_pdo_progression = pdo_values[analog_year]
 
-        snowfall_total[line[0]] = float(line[-1])
+        analog_oni_progression = analog_oni_progression[:len(current_oni_progression)]
+        analog_pdo_progression = analog_pdo_progression[:len(current_pdo_progression)]
 
-temperature = {}
-with open(f"temperature_data/temperature_{station}.txt") as file:
-    for line in file.readlines():
-        line = line.split()
-        temperature[int(line[0])] = list(map(float, line[1:]))
+        oni_analogs[analog_year] = [
+            abs(analog_oni_value - current_oni_value) ** raise_to
+            for analog_oni_value, current_oni_value in zip(analog_oni_progression, current_oni_progression)
+        ]
+        pdo_analogs[analog_year] = [
+            abs(analog_pdo_value - current_pdo_value) ** raise_to
+            for analog_pdo_value, current_pdo_value in zip(analog_pdo_progression, current_pdo_progression)
+        ]
 
-nao = {}
-with open("teleconnections/nao.txt") as file:
-    for line in file.readlines():
-        line = line.split()
-        nao[int(line[0])] = list(map(float, line[1:]))
+    oni_analogs = dict(sorted(oni_analogs.items(), key=lambda pair: sum(pair[1])))
+    pdo_analogs = dict(sorted(pdo_analogs.items(), key=lambda pair: sum(pair[1])))
 
-ao = {}
-with open("teleconnections/ao.txt") as file:
-    for line in file.readlines():
-        line = line.split()
-        ao[int(line[0])] = list(map(float, line[1:]))
+    analogs = {}
 
-pdo = {}
-with open("teleconnections/pdo.txt") as file:
-    for line in file.readlines():
-        line = line.split()
-        pdo[int(line[0])] = list(map(float, line[1:]))
+    for analog_year in range(start_year, year):
+        oni_place = list(oni_analogs.keys()).index(analog_year) + 1
+        pdo_place = list(pdo_analogs.keys()).index(analog_year) + 1
 
+        analogs[analog_year] = (oni_place + pdo_place) / 2
 
-def get_analog(year: int):
-    analogs = defaultdict(int)
-    cur_year = oni[year]
+    analogs = dict(sorted(analogs.items(), key=itemgetter(1)))
 
-    def calculate_analog_score(factor: dict, raise_to: int):
-        for key, value in factor.items():
-            if year > key > min(snowfall.keys()):
-                score = 0
-                for month_fac, cur_month_fac in zip(cur_year, value[:len(cur_year)]):
-                    score += (max((cur_month_fac, month_fac)) - min((cur_month_fac, month_fac))) ** raise_to
-
-                analogs[key] += score
-
-    # calculate score for oni
-    calculate_analog_score(oni, 3)
-
-    # calculate score for snowfall
-    calculate_analog_score(snowfall, 2)
-
-    # calculate score for temperatures
-    calculate_analog_score(temperature, 1)
-
-    # calculate score based off of NAO teleconnections
-    calculate_analog_score(nao, 2)
-
-    # calculate score based off of AO teleconnections
-    calculate_analog_score(ao, 2)
-
-    # calculate score based off of PDO teleconnections
-    calculate_analog_score(pdo, 2)
-
-    return analogs, cur_year
+    return list(analogs.keys())[:years_to_return]
 
 
-def average(iterable):
-    return sum(iterable) / len(iterable)
+def analog_snowfalls(analog_years: list, airport: str) -> dict:
+    """
+    Returns a dictionary containing the median snowfall and the snowfall of each analog based on the years passed in for the analogs and the airport.
+
+    :param analog_years: List of years that are analogs with the requested winter.
+    :param airport: A string representing which airport to get the analog snowfall for.
+    """
+    analog_snowfall_data = {"airport": airport, "season_snowfalls": {}}
+
+    with open(f"snowfall_data/snowfall_{airport.lower()}.json") as file:
+        snowfall_data = load(file)
+
+    for year in analog_years:
+        analog_snowfall_data["season_snowfalls"][f"{year}-{str(year + 1)[2:]}"] = sum(snowfall_data[str(year)])
+
+    analog_snowfall_data["median"] = median(analog_snowfall_data["season_snowfalls"].values())
+
+    return analog_snowfall_data
 
 
-analogs = get_analog(2022)[0]
-result = sorted(analogs, key=analogs.__getitem__)
-avg = 0
-for year in result[:10]:
-    avg += snowfall_total[f"{year}-{str(year + 1)[-2:]}"]
+def format_analog_data(analog_snowfall_data: dict) -> str:
+    """
+    Formats analog data to be digestible.
 
-formatted_years = [
-    f"\t\n⚫ {year}-{year + 1}: {snowfall_total[f'{year}-{str(year + 1)[-2:]}']:.3f}\""
-    for year in result[:10]
-]
+    :param analog_snowfall_data: Dictionary containing analog snowfall data.
+    :return: String containing formatted analog data.
+    """
+    formatted_specific_snowfalls = [
+        f"\t\n⚫ {winter}: {snowfall_total:.3f}\""
+        for winter, snowfall_total in analog_snowfall_data["season_snowfalls"].items()
+    ]
 
-print(
-    f"⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
-    f"Total snowfall for the 2022-2023 year at {station.upper()} predicted to be: {avg / 10:.1f}\""
-)
-print(f"⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\nTop analogs for {station.upper()} are: {''.join(formatted_years)}")
+    return (
+        f"⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
+        f"Total snowfall for the 2022-2023 year at {analog_snowfall_data['airport'].upper()}"
+        f" predicted to be: {analog_snowfall_data['median']:.2f}\""
+        f"\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
+        f"Top analogs for {analog_snowfall_data['airport'].upper()} are: {''.join(formatted_specific_snowfalls)}"
+    )
+
+
+if __name__ == '__main__':
+    print(
+        format_analog_data(
+            analog_snowfalls(
+                get_analog(2022, years_to_return=5),
+                airport="BWI"
+            )
+        )
+    )
