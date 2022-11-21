@@ -1,7 +1,7 @@
 from itertools import chain
 from json import load
 from operator import itemgetter
-from statistics import median
+from statistics import median, mean
 
 
 def retrieve_oni_values() -> dict:
@@ -136,12 +136,44 @@ def format_analog_data(analog_snowfall_data: dict) -> str:
     )
 
 
-if __name__ == '__main__':
+def check_accuracy(airport: str, start_year: int = 2010) -> None:
+    """
+    Checks and prints accuracy by airport with this analog predictor.
+
+    :param airport: Airport to check accuracy for.
+    :param start_year: Start year of checking years and their accuracy.
+    """
+    accuracy = {}
+
+    with open(f"snowfall_data/snowfall_{airport.lower()}.json") as file:
+        snowfall_data = load(file)
+
+    for year in range(start_year, 2022):
+        accuracy[year] = (analog_snowfalls(
+            get_analog(year),
+            airport=airport
+        )["median"] / sum(snowfall_data[str(year)])) * 100
+
+    formatted_accuracy_by_year = [
+        f"\t\n⚫ {year}-{year + 1}: {accuracy:.1f}%"
+        for year, accuracy in accuracy.items()
+    ]
+
     print(
-        format_analog_data(
-            analog_snowfalls(
-                get_analog(2022, years_to_return=5),
-                airport="BWI"
-            )
-        )
+        f"⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
+        f"% of snow predicted by this model versus the actual snow that fell at {airport.upper()} from {start_year} to 2022: {mean(accuracy.values()):.1f}%"
+        f"\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
+        f"% of predicted snowfall versus actual snowfall by year at {airport.upper()} are: {''.join(formatted_accuracy_by_year)}"
     )
+
+
+if __name__ == '__main__':
+    check_accuracy(airport="IAD", start_year=2010)
+    # print(
+    #     format_analog_data(
+    #         analog_snowfalls(
+    #             get_analog(2022),
+    #             airport="BWI"
+    #         )
+    #     )
+    # )
